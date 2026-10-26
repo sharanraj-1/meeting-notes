@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+    <title>Meeting Notes</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Meeting Notes</span>
+      </div>
+      <button id="new-meeting" class="btn primary wide">New meeting</button>
+      <input id="search" class="search" type="search" placeholder="Search notes and transcripts" />
+      <nav id="meeting-list" class="meeting-list" aria-label="Meetings"></nav>
+      <footer id="status" class="status"></footer>
+    </aside>
+
+    <main id="main">
+      <div id="banner" class="banner" hidden></div>
+
+      <section id="empty" class="empty">
+        <h1>Notes that write themselves.</h1>
+        <p>Start a meeting here, or just join a call in Zoom, Teams or Meet and we'll offer to take notes. Nothing joins your call: we listen to your mic and to what your computer plays.</p>
+        <button id="empty-new" class="btn primary">Start a meeting</button>
+      </section>
+
+      <section id="meeting" class="meeting" hidden>
+        <header class="meeting-head">
+          <div class="title-block">
+            <input id="title" class="title" aria-label="Meeting title" />
+            <div id="meta" class="meta"></div>
+          </div>
+          <div class="controls">
+            <div id="meters" class="meters" hidden>
+              <span class="meter"><span class="meter-label">You</span><span class="meter-bar"><i id="meter-you"></i></span></span>
+              <span class="meter"><span class="meter-label">Them</span><span class="meter-bar"><i id="meter-them"></i></span></span>
+            </div>
+            <span id="timer" class="timer" hidden>00:00</span>
+            <button id="record" class="btn record">Start recording</button>
+            <button id="delete" class="btn ghost" title="Delete meeting" aria-label="Delete meeting">Delete</button>
+          </div>
+        </header>
+
+        <div class="panes">
+          <div class="notes-pane">
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-tab="mine" role="tab">My notes</button>
+              <button class="tab" data-tab="ai" role="tab">AI notes</button>
+            </div>
+            <textarea id="user-notes" class="user-notes" placeholder="Jot down whatever matters. Rough is fine: the AI notes will fill in the rest from the transcript."></textarea>
+            <div id="ai-pane" class="ai-pane" hidden>
+              <div class="ai-actions">
+                <button id="enhance" class="btn primary">Write AI notes</button>
+                <span id="ai-status" class="hint"></span>
+              </div>
+              <article id="ai-notes" class="ai-notes"></article>
+            </div>
+          </div>
+
+          <div class="transcript-pane">
+            <div class="pane-head">
+              <h2>Transcript</h2>
+              <span id="transcript-hint" class="hint"></span>
+            </div>
+            <div id="transcript" class="transcript"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "meeting-notes",
+  "productName": "Meeting Notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Granola-style meeting notetaker: records your mic and computer audio without joining the call, transcribes live with Deepgram, writes notes with Claude, stores everything in Supabase.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "test": "node --test \"test/**/*.test.js\"",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:status": "supabase status",
+    "db:reset": "supabase db reset",
+    "db:env": "node scripts/sync-supabase-env.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.135.0",
+    "@supabase/supabase-js": "2.118.0",
+    "dotenv": "18.0.8",
+    "ws": "8.22.0"
+  },
+  "allowScripts": {
+    "electron": true
+  },
+  "devDependencies": {
+    "electron": "44.9.1",
+    "supabase": "2.121.0"
+  }
+}
