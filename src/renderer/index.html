@@ -15,6 +15,11 @@
       <button id="new-meeting" class="btn primary wide">New meeting</button>
       <input id="search" class="search" type="search" placeholder="Search notes and transcripts" />
       <nav id="meeting-list" class="meeting-list" aria-label="Meetings"></nav>
+      <section class="engine" aria-labelledby="engine-label">
+        <div id="engine-label" class="engine-label">Transcription</div>
+        <div id="engine-switch" class="segmented" role="radiogroup" aria-labelledby="engine-label"></div>
+        <div id="engine-detail" class="engine-detail"></div>
+      </section>
       <footer id="status" class="status"></footer>
     </aside>
 

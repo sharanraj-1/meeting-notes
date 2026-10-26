@@ -45,23 +45,53 @@ function buildUserMessage({ title, userNotes, segments }) {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_MODEL = 'anthropic/claude-opus-5.5';
+// OpenRouter's router: picks a model the account's guardrails allow.
+const OPENROUTER_FALLBACK_MODEL = 'openrouter/auto';
+const GUARDRAILS_URL = 'https://openrouter.ai/workspaces/default/guardrails';
 
 // Picks the provider from whichever key is set. Anthropic first, then OpenRouter.
 function notesProvider(env = process.env) {
   if (env.ANTHROPIC_API_KEY) return { name: 'anthropic', model: MODEL };
-  if (env.OPENROUTER_API_KEY) return { name: 'openrouter', model: OPENROUTER_MODEL };
+  if (env.OPENROUTER_API_KEY) return { name: 'openrouter', model: env.OPENROUTER_MODEL || OPENROUTER_MODEL };
   return null;
 }
 
-// onText(delta) is called as text streams in. Resolves with the full Markdown.
-async function enhanceNotes({ anthropicKey, openrouterKey, ...rest }) {
+// onText(delta) is called as text streams in.
+// Resolves with { text, model, notice? }: the Markdown, the model that wrote
+// it, and a note for the user when we had to use a different model.
+async function enhanceNotes({ anthropicKey, openrouterKey, openrouterModel, ...rest }) {
   if (anthropicKey) return enhanceWithAnthropic({ apiKey: anthropicKey, ...rest });
-  if (openrouterKey) return enhanceWithOpenRouter({ apiKey: openrouterKey, ...rest });
+  if (openrouterKey) return enhanceViaOpenRouter({ apiKey: openrouterKey, model: openrouterModel || OPENROUTER_MODEL, ...rest });
   throw new Error('No AI key set. Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to your .env file.');
 }
 
+class GuardrailError extends Error {}
+
+// An OpenRouter account can have guardrails that block models or providers.
+// If the model we want is blocked, try the router once and say so.
+async function enhanceViaOpenRouter({ model, ...rest }) {
+  try {
+    return await enhanceWithOpenRouter({ model, ...rest });
+  } catch (err) {
+    if (!(err instanceof GuardrailError) || model === OPENROUTER_FALLBACK_MODEL) throw err;
+    let result;
+    try {
+      result = await enhanceWithOpenRouter({ model: OPENROUTER_FALLBACK_MODEL, ...rest });
+    } catch (err2) {
+      if (err2 instanceof GuardrailError) {
+        throw new Error(`Your OpenRouter guardrails block every model we tried. Allow a model at ${GUARDRAILS_URL}, or set OPENROUTER_MODEL in .env to one that's allowed.`);
+      }
+      throw err2;
+    }
+    return {
+      ...result,
+      notice: `Your OpenRouter guardrails block ${model}, so ${result.model} wrote these notes. To use Claude, allow Anthropic at ${GUARDRAILS_URL}.`,
+    };
+  }
+}
+
 // OpenRouter speaks the OpenAI chat format and streams Server-Sent Events.
-async function enhanceWithOpenRouter({ apiKey, title, userNotes, segments, onText, signal, fetchImpl = fetch }) {
+async function enhanceWithOpenRouter({ apiKey, model = OPENROUTER_MODEL, title, userNotes, segments, onText, signal, fetchImpl = fetch }) {
   const res = await fetchImpl(OPENROUTER_URL, {
     method: 'POST',
     signal,
@@ -71,7 +101,7 @@ async function enhanceWithOpenRouter({ apiKey, title, userNotes, segments, onTex
       'X-Title': 'Meeting Notes',
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
+      model,
       stream: true,
       max_tokens: 16000,
       messages: [
@@ -89,11 +119,13 @@ async function enhanceWithOpenRouter({ apiKey, title, userNotes, segments, onTex
     }
     if (res.status === 401) throw new Error('OpenRouter rejected the API key (401). Check OPENROUTER_API_KEY in .env.');
     if (res.status === 402) throw new Error('Your OpenRouter account is out of credits (402).');
+    if (res.status === 404 && /guardrail|data policy/i.test(detail)) throw new GuardrailError(detail);
     throw new Error(`OpenRouter error ${res.status}${detail ? `: ${detail}` : ''}`);
   }
 
   let text = '';
   let finish = null;
+  let served = model;
   let buffer = '';
   const decoder = new TextDecoder();
   for await (const chunk of res.body) {
@@ -112,6 +144,7 @@ async function enhanceWithOpenRouter({ apiKey, title, userNotes, segments, onTex
         continue;
       }
       if (evt.error) throw new Error(`OpenRouter: ${evt.error.message ?? 'stream error'}`);
+      if (evt.model) served = evt.model;
       const choice = evt.choices?.[0];
       const delta = choice?.delta?.content;
       if (delta) {
@@ -122,8 +155,8 @@ async function enhanceWithOpenRouter({ apiKey, title, userNotes, segments, onTex
     }
   }
   if (!text.trim()) throw new Error(finish === 'content_filter' ? 'The model declined to write notes for this meeting.' : 'OpenRouter returned no text.');
-  if (finish === 'length') return `${text}\n\n_(Notes were cut off because they hit the length limit.)_`;
-  return text;
+  if (finish === 'length') text += '\n\n_(Notes were cut off because they hit the length limit.)_';
+  return { text, model: served };
 }
 
 async function enhanceWithAnthropic({ apiKey, title, userNotes, segments, onText, signal }) {
@@ -154,8 +187,8 @@ async function enhanceWithAnthropic({ apiKey, title, userNotes, segments, onText
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('');
-  if (message.stop_reason === 'max_tokens') return `${text}\n\n_(Notes were cut off because they hit the length limit.)_`;
-  return text;
+  const note = message.stop_reason === 'max_tokens' ? '\n\n_(Notes were cut off because they hit the length limit.)_' : '';
+  return { text: text + note, model: message.model };
 }
 
-module.exports = { enhanceNotes, enhanceWithOpenRouter, notesProvider, buildUserMessage, formatTranscript, MODEL, OPENROUTER_MODEL };
+module.exports = { enhanceNotes, enhanceWithOpenRouter, notesProvider, buildUserMessage, formatTranscript, MODEL, OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODEL };

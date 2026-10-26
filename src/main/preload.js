@@ -14,6 +14,7 @@ function on(channel) {
 contextBridge.exposeInMainWorld('api', {
   info: () => ipcRenderer.invoke('app:info'),
   storeError: () => ipcRenderer.invoke('app:store-error'),
+  setEngine: (engine) => ipcRenderer.invoke('settings:set-engine', engine),
 
   listMeetings: () => ipcRenderer.invoke('meetings:list'),
   searchMeetings: (q) => ipcRenderer.invoke('meetings:search', q),

@@ -113,10 +113,11 @@ Meetings saved before you connected Supabase stay in the local file and aren't c
 ## 5. Using the app
 
 1. **Start a meeting.** Click **New meeting**, or join a call: when Zoom, Teams or similar grabs your mic you'll get a notification, and clicking it starts recording.
-2. **Record.** Click **Start recording**. The *You* and *Them* meters show both audio sources are coming through; the transcript fills in live on the right.
-3. **Jot notes.** Type rough notes in *My notes* while you talk. They save automatically.
-4. **Stop**, then click **Write AI notes**. Claude uses your notes as the outline and the transcript for the detail, and adds action items.
-5. **Search** from the sidebar across titles, notes and transcripts.
+2. **Pick how to transcribe** with the **Transcription** switch at the bottom of the sidebar: **On-device** (free, private, works offline) or **Deepgram** (live word-by-word, needs `DEEPGRAM_API_KEY`). Your choice is remembered; it is locked while recording.
+3. **Record.** Click **Start recording**. The *You* and *Them* meters show both audio sources are coming through; the transcript fills in live on the right.
+4. **Jot notes.** Type rough notes in *My notes* while you talk. They save automatically.
+5. **Stop**, then click **Write AI notes**. Claude uses your notes as the outline and the transcript for the detail, and adds action items.
+6. **Search** from the sidebar across titles, notes and transcripts.
 
 **Before you record anyone, tell them.** Recording laws differ by country and state, and many require everyone's consent.
 
@@ -151,6 +152,7 @@ scripts/sync-supabase-env.js copies local Supabase URL/key into .env
 
 - **"AI notes: no key set"**: check `.env` is in the project folder (not `.env.txt`), has `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`, and restart the app.
 - **On-device transcription is slow or inaccurate**: it runs on your CPU. Close heavy apps, or add a Deepgram key. For better accuracy at some speed cost, set `LOCAL_WHISPER_MODEL=onnx-community/whisper-small.en`.
+- **AI notes say another model wrote them, or "guardrails block every model"**: your OpenRouter workspace has guardrails that block Claude (common on school or company accounts). Allow Anthropic at <https://openrouter.ai/workspaces/default/guardrails>, or set `OPENROUTER_MODEL` in `.env` to a model your guardrails allow.
 - **"Your OpenRouter account is out of credits (402)"**: top up at <https://openrouter.ai/settings/credits>.
 - **Deepgram rejected the API key (401)**: copy the key again from the Deepgram console.
 - **"Them" meter never moves**: play something (a YouTube video) to test. Loopback records your *default* playback device; if the call plays through a different device, make it the default in Windows sound settings.

@@ -168,8 +168,9 @@ test('OpenRouter notes stream text deltas and handle split lines and keep-alives
     ]);
   };
   const deltas = [];
-  const md = await enhanceWithOpenRouter({ apiKey: 'k', title: 'T', userNotes: '', segments: [], onText: (d) => deltas.push(d), fetchImpl });
+  const { text: md, model } = await enhanceWithOpenRouter({ apiKey: 'k', title: 'T', userNotes: '', segments: [], onText: (d) => deltas.push(d), fetchImpl });
   assert.equal(md, '# Title');
+  assert.equal(model, 'anthropic/claude-opus-5.5');
   assert.deepEqual(deltas, ['# Ti', 'tle']);
   assert.equal(sent.init.headers.Authorization, 'Bearer k');
   assert.equal(JSON.parse(sent.init.body).model, 'anthropic/claude-opus-5.5');
@@ -184,4 +185,52 @@ test('OpenRouter errors become readable messages', async () => {
     enhanceWithOpenRouter({ apiKey: 'k', segments: [], fetchImpl: async () => sseResponse([], 402) }),
     /out of credits/,
   );
+});
+
+test('engine setting: defaults, falls back without a key, and persists', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { Settings } = require('../src/main/settings');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mn-settings-')), 'settings.json');
+
+  assert.equal(new Settings(file, {}).engine, 'local');
+  const withKey = new Settings(file, { DEEPGRAM_API_KEY: 'k' });
+  assert.equal(withKey.engine, 'deepgram', 'Deepgram by default when a key is set');
+
+  withKey.setEngine('local');
+  assert.equal(new Settings(file, { DEEPGRAM_API_KEY: 'k' }).engine, 'local', 'choice survives a restart');
+
+  withKey.setEngine('deepgram');
+  assert.equal(new Settings(file, {}).engine, 'local', 'no key: on-device even if Deepgram was picked');
+  assert.throws(() => new Settings(file, {}).setEngine('deepgram'), /DEEPGRAM_API_KEY/);
+  assert.throws(() => withKey.setEngine('cloud'), /Unknown/);
+});
+
+test('OpenRouter guardrail block: retries with the router and says which model wrote the notes', async () => {
+  const { enhanceNotes } = require('../src/main/notes');
+  const asked = [];
+  const guardrail = { ok: false, status: 404, json: async () => ({ error: { message: '0 endpoints out of 5 requested are available matching your guardrail restrictions and data policy.' } }) };
+  const fetchImpl = async (_url, init) => {
+    const { model } = JSON.parse(init.body);
+    asked.push(model);
+    if (model.startsWith('anthropic/')) return guardrail;
+    return sseResponse(['data: {"model":"google/gemini-3.8-flash","choices":[{"delta":{"content":"# Notes"},"finish_reason":"stop"}]}\n\n']);
+  };
+  const out = await enhanceNotes({ openrouterKey: 'k', segments: [], fetchImpl });
+  assert.deepEqual(asked, ['anthropic/claude-opus-5.5', 'openrouter/auto']);
+  assert.equal(out.text, '# Notes');
+  assert.equal(out.model, 'google/gemini-3.8-flash');
+  assert.match(out.notice, /guardrails block anthropic\/claude-opus-5\.5, so google\/gemini-3\.8-flash wrote/);
+
+  await assert.rejects(
+    enhanceNotes({ openrouterKey: 'k', segments: [], fetchImpl: async () => guardrail }),
+    /block every model we tried.*OPENROUTER_MODEL/,
+  );
+  const custom = [];
+  await enhanceNotes({
+    openrouterKey: 'k', openrouterModel: 'openai/some-model', segments: [],
+    fetchImpl: async (_u, init) => { custom.push(JSON.parse(init.body).model); return sseResponse(['data: {"choices":[{"delta":{"content":"x"}}]}\n\n']); },
+  });
+  assert.deepEqual(custom, ['openai/some-model'], 'OPENROUTER_MODEL is used as-is');
 });

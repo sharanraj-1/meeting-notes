@@ -81,13 +81,45 @@ async function renderStatus() {
   if (storeError) rows.push(el('div', { class: 'warn' }, `Supabase error: ${storeError}`));
   else if (info.storeKind === 'supabase') rows.push(el('div', { class: 'ok' }, `Supabase · ${new URL(info.storeLabel).host}`));
   else rows.push(el('div', { class: 'warn', title: info.storeLabel }, 'Saving on this computer (Supabase not set up)'));
-  rows.push(el('div', { class: 'ok' }, `Transcription: ${info.transcription.label}`));
   rows.push(
     info.notes
       ? el('div', { class: 'ok' }, `AI notes: ${info.notes.name === 'openrouter' ? 'Claude via OpenRouter' : 'Claude'}`)
       : el('div', { class: 'warn' }, 'AI notes: no key set'),
   );
   $('status').replaceChildren(...rows);
+}
+
+// Sidebar switch between on-device Whisper and Deepgram. Locked while recording.
+function renderEngineSwitch() {
+  const { engines, transcription } = state.info;
+  const current = engines.find((e) => e.id === transcription.kind);
+  const buttons = engines.map((e) =>
+    el(
+      'button',
+      {
+        role: 'radio',
+        'aria-checked': String(e.id === transcription.kind),
+        title: e.detail,
+        onclick: () => switchEngine(e.id),
+      },
+      e.label,
+    ),
+  );
+  buttons.forEach((b, i) => {
+    b.disabled = Boolean(state.rec) || !engines[i].available;
+  });
+  $('engine-switch').replaceChildren(...buttons);
+  $('engine-detail').textContent = state.rec ? 'Stop recording to switch.' : current?.detail ?? '';
+}
+
+async function switchEngine(id) {
+  if (state.rec || id === state.info.transcription.kind) return;
+  try {
+    state.info = await api.setEngine(id);
+  } catch (err) {
+    showBanner(err.message, { error: true });
+  }
+  renderEngineSwitch();
 }
 
 async function loadList() {
@@ -289,6 +321,7 @@ function renderRecordButton() {
   btn.title = busyElsewhere ? 'Another meeting is recording' : '';
   $('meters').hidden = !live;
   $('timer').hidden = !live;
+  renderEngineSwitch();
 }
 
 function setLevel(level) {
@@ -406,17 +439,19 @@ async function enhance() {
   state.aiBusy = true;
   state.aiBuffer = '';
   $('enhance').disabled = true;
-  $('ai-status').textContent = 'Claude is writing…';
+  $('ai-status').textContent = 'Writing…';
   $('ai-notes').replaceChildren(el('div', { class: 'placeholder' }, 'Reading the transcript…'));
   try {
-    const markdown = await api.enhanceNotes(m.id);
+    const { markdown, model, notice } = await api.enhanceNotes(m.id);
     if (state.current?.id === m.id) {
       m.enhanced_notes = markdown;
       renderAiNotes(markdown);
     }
-    $('ai-status').textContent = 'Saved.';
+    $('ai-status').textContent = notice ?? `Saved · written by ${model}`;
   } catch (err) {
-    $('ai-status').textContent = `Couldn't write notes: ${err.message}`;
+    // Electron prefixes errors from the main process; show just our message.
+    const msg = err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+    $('ai-status').textContent = `Couldn't write notes: ${msg}`;
     if (state.current?.id === m.id) renderAiNotes(m.enhanced_notes);
   } finally {
     state.aiBusy = false;
@@ -490,6 +525,7 @@ async function init() {
   if (state.info.smoke) return runSmoke();
 
   await renderStatus();
+  renderEngineSwitch();
   await loadList();
 
   $('new-meeting').addEventListener('click', () => newMeeting());

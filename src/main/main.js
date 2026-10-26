@@ -23,13 +23,14 @@ const { EchoFilter } = require('./echo');
 const { MeetingDetector } = require('./meetingDetector');
 const { enhanceNotes, notesProvider } = require('./notes');
 const { openStore } = require('./db');
+const { Settings } = require('./settings');
 
 const LANGUAGE = () => process.env.TRANSCRIPTION_LANGUAGE || process.env.DEEPGRAM_LANGUAGE || 'en';
 
-// Deepgram when there's a key (fastest, most accurate), otherwise free
-// on-device Whisper that needs no account at all.
+// Whichever engine is picked in the sidebar: Deepgram (live, needs a key)
+// or free on-device Whisper that needs no account at all.
 function createTranscriber(meeting) {
-  if (process.env.DEEPGRAM_API_KEY) {
+  if (settings.engine === 'deepgram') {
     const extra = (process.env.DEEPGRAM_KEYTERMS || '').split(',');
     const fromTitle = (meeting?.title || '').split(/[,;|·]/);
     return new DeepgramStream({
@@ -55,6 +56,7 @@ protocol.registerSchemesAsPrivileged([
 
 let win = null;
 let store = null;
+const settings = new Settings(path.join(DATA_DIR, 'settings.json'));
 let detector = null;
 let recording = null; // { meetingId, stream, echo }
 let notesAbort = null;
@@ -117,16 +119,31 @@ function setUpAudioCapture() {
 }
 
 function registerIpc() {
-  ipcMain.handle('app:info', () => ({
+  const info = () => ({
     storeKind: store.kind,
     storeLabel: store.label,
-    transcription: process.env.DEEPGRAM_API_KEY
-      ? { kind: 'deepgram', label: 'Deepgram (live)' }
-      : { kind: 'local', label: `On-device Whisper (${modelFor(LANGUAGE()).split('/').pop()})` },
+    transcription: { kind: settings.engine },
+    engines: [
+      { id: 'local', label: 'On-device', available: true, detail: `Free · Whisper ${modelFor(LANGUAGE()).split('/').pop().replace('whisper-', '')} · works offline` },
+      {
+        id: 'deepgram',
+        label: 'Deepgram',
+        available: settings.hasDeepgramKey,
+        detail: settings.hasDeepgramKey ? 'Live word-by-word · speaker labels · uses credit' : 'Add DEEPGRAM_API_KEY to .env',
+      },
+    ],
     notes: notesProvider(),
     platform: process.platform,
     smoke: SMOKE,
-  }));
+  });
+  ipcMain.handle('app:info', info);
+
+  // The sidebar switch. Takes effect on the next recording, so it's locked while recording.
+  ipcMain.handle('settings:set-engine', (_e, engine) => {
+    if (recording) throw new Error('Stop recording before switching transcription.');
+    settings.setEngine(engine);
+    return info();
+  });
 
   ipcMain.handle('meetings:list', () => store.listMeetings());
   ipcMain.handle('meetings:search', (_e, q) => (q?.trim() ? store.searchMeetings(q.trim()) : store.listMeetings()));
@@ -193,9 +210,10 @@ function registerIpc() {
     notesAbort?.abort();
     notesAbort = new AbortController();
     const m = await store.getMeeting(meetingId);
-    const markdown = await enhanceNotes({
+    const result = await enhanceNotes({
       anthropicKey: process.env.ANTHROPIC_API_KEY,
       openrouterKey: process.env.OPENROUTER_API_KEY,
+      openrouterModel: process.env.OPENROUTER_MODEL,
       title: m.title,
       userNotes: m.user_notes,
       segments: m.segments,
@@ -203,8 +221,8 @@ function registerIpc() {
       onText: (delta) => send('notes:delta', { meetingId, delta }),
     });
     notesAbort = null;
-    await store.updateMeeting(meetingId, { enhanced_notes: markdown });
-    return markdown;
+    await store.updateMeeting(meetingId, { enhanced_notes: result.text });
+    return { markdown: result.text, model: result.model, notice: result.notice ?? null };
   });
 
   ipcMain.on('smoke:result', (_e, result) => {

@@ -4,3 +4,5 @@ supabase/.branches
 supabase/.temp
 *.log
 data/
+# /brag launch video output (frames, renders, tools)
+brag-output*/
