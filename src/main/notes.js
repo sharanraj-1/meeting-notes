@@ -43,9 +43,90 @@ function buildUserMessage({ title, userNotes, segments }) {
   ].join('\n');
 }
 
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL = 'anthropic/claude-opus-5.5';
+
+// Picks the provider from whichever key is set. Anthropic first, then OpenRouter.
+function notesProvider(env = process.env) {
+  if (env.ANTHROPIC_API_KEY) return { name: 'anthropic', model: MODEL };
+  if (env.OPENROUTER_API_KEY) return { name: 'openrouter', model: OPENROUTER_MODEL };
+  return null;
+}
+
 // onText(delta) is called as text streams in. Resolves with the full Markdown.
-async function enhanceNotes({ apiKey, title, userNotes, segments, onText, signal }) {
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set. Add it to your .env file.');
+async function enhanceNotes({ anthropicKey, openrouterKey, ...rest }) {
+  if (anthropicKey) return enhanceWithAnthropic({ apiKey: anthropicKey, ...rest });
+  if (openrouterKey) return enhanceWithOpenRouter({ apiKey: openrouterKey, ...rest });
+  throw new Error('No AI key set. Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to your .env file.');
+}
+
+// OpenRouter speaks the OpenAI chat format and streams Server-Sent Events.
+async function enhanceWithOpenRouter({ apiKey, title, userNotes, segments, onText, signal, fetchImpl = fetch }) {
+  const res = await fetchImpl(OPENROUTER_URL, {
+    method: 'POST',
+    signal,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'X-Title': 'Meeting Notes',
+    },
+    body: JSON.stringify({
+      model: OPENROUTER_MODEL,
+      stream: true,
+      max_tokens: 16000,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: buildUserMessage({ title, userNotes, segments }) },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = (await res.json())?.error?.message ?? '';
+    } catch {
+      /* not JSON */
+    }
+    if (res.status === 401) throw new Error('OpenRouter rejected the API key (401). Check OPENROUTER_API_KEY in .env.');
+    if (res.status === 402) throw new Error('Your OpenRouter account is out of credits (402).');
+    throw new Error(`OpenRouter error ${res.status}${detail ? `: ${detail}` : ''}`);
+  }
+
+  let text = '';
+  let finish = null;
+  let buffer = '';
+  const decoder = new TextDecoder();
+  for await (const chunk of res.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue; // ": OPENROUTER PROCESSING" keep-alives etc.
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      let evt;
+      try {
+        evt = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (evt.error) throw new Error(`OpenRouter: ${evt.error.message ?? 'stream error'}`);
+      const choice = evt.choices?.[0];
+      const delta = choice?.delta?.content;
+      if (delta) {
+        text += delta;
+        onText?.(delta);
+      }
+      if (choice?.finish_reason) finish = choice.finish_reason;
+    }
+  }
+  if (!text.trim()) throw new Error(finish === 'content_filter' ? 'The model declined to write notes for this meeting.' : 'OpenRouter returned no text.');
+  if (finish === 'length') return `${text}\n\n_(Notes were cut off because they hit the length limit.)_`;
+  return text;
+}
+
+async function enhanceWithAnthropic({ apiKey, title, userNotes, segments, onText, signal }) {
   const client = new Anthropic({ apiKey });
 
   const stream = client.beta.messages.stream(
@@ -77,4 +158,4 @@ async function enhanceNotes({ apiKey, title, userNotes, segments, onText, signal
   return text;
 }
 
-module.exports = { enhanceNotes, buildUserMessage, formatTranscript, MODEL };
+module.exports = { enhanceNotes, enhanceWithOpenRouter, notesProvider, buildUserMessage, formatTranscript, MODEL, OPENROUTER_MODEL };

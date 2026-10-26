@@ -17,12 +17,15 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.135.0",
+    "@huggingface/transformers": "^4.3.1",
     "@supabase/supabase-js": "2.118.0",
     "dotenv": "18.0.8",
     "ws": "8.22.0"
   },
   "allowScripts": {
-    "electron": true
+    "electron": true,
+    "onnxruntime-node": false,
+    "protobufjs": false
   },
   "devDependencies": {
     "electron": "44.9.1",

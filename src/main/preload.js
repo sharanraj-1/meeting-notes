@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   stopRecording: () => ipcRenderer.invoke('rec:stop'),
   onTranscript: on('rec:transcript'),
   onRecordingError: on('rec:error'),
+  onRecordingStatus: on('rec:status'),
 
   enhanceNotes: (meetingId) => ipcRenderer.invoke('notes:enhance', meetingId),
   onNotesDelta: on('notes:delta'),

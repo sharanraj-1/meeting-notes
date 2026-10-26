@@ -1,6 +1,6 @@
 # Meeting Notes
 
-A Granola-style meeting notetaker for Windows. It records your meetings **without joining the call**, transcribes them live with Deepgram, writes clean notes with Claude, and stores everything in Supabase.
+A Granola-style meeting notetaker for Windows. It records your meetings **without joining the call**, transcribes them **on your own computer for free** (or live with Deepgram if you add a key), writes clean notes with Claude, and stores everything in Supabase.
 
 ## How it works
 
@@ -12,23 +12,25 @@ Granola doesn't add a bot to your Zoom or Teams call. It listens to two things o
 | Everyone else | Windows *loopback* audio: a copy of whatever your speakers or headphones are playing (`getDisplayMedia` + Electron's `audio: 'loopback'`) | **Them** / **Speaker 1, 2…** |
 
 ```
- mic ──────────┐
-               ├─► 2-channel 16 kHz PCM ─► Deepgram (live, per channel) ─► transcript ─► Supabase
- speakers ─────┘        (audio worklet)                                         │
- (loopback)                                                                     ▼
-                                     your rough notes + transcript ─► Claude ─► AI notes
+ mic ──────────┐                          ┌─► on-device Whisper (free, default) ─┐
+               ├─► 2-channel 16 kHz PCM ─┤                                       ├─► transcript ─► Supabase
+ speakers ─────┘     (audio worklet)      └─► Deepgram (live, if you add a key) ──┘        │
+ (loopback)                                                                                ▼
+                               your rough notes + transcript ─► Claude (OpenRouter or Anthropic) ─► AI notes
 ```
 
 - **Meeting detection.** Every few seconds the app checks which programs are using your microphone (Windows records this in the registry). When Zoom, Teams, Webex, Slack, WhatsApp, Discord or a browser starts using it, you get a notification offering to take notes.
 - **Echo filter.** On speakers, your mic also picks up the other people. The app drops "You" lines that just repeat what came through the computer audio. Headphones still give the cleanest transcript.
-- **Keys stay safe.** The Deepgram, Anthropic and Supabase keys live only in the app's main process. The window never sees them.
+- **Two ways to transcribe.** With no key, OpenAI's open-source Whisper model runs on your PC: free and private, and nothing leaves your computer. Lines appear a moment after each person finishes a sentence. Add a Deepgram key and you get word-by-word live text, better accuracy and speaker labels for the other side.
+- **Built to survive bad Wi-Fi (Deepgram).** Modelled on how Granola's own client behaves (found by reverse-engineering it with REA): it reconnects automatically, keeps up to 2 minutes of audio while offline and sends it once it's back, notices a connection that has silently died, and lets you give it names and jargon to spell right (`DEEPGRAM_KEYTERMS`).
+- **Keys stay safe.** All keys live only in the app's main process. The window never sees them.
 
 ## 1. What you need
 
 - Windows 10 or 11
 - Node.js 22 or newer (`node --version`)
-- A **Deepgram** API key, for transcription. Sign up at <https://console.deepgram.com>: new accounts get free credit. Go to *API Keys → Create a New API Key*. Deepgram bills per minute of audio *per channel*, and this app sends two channels (you + them), so a meeting uses twice its length in minutes.
-- An **Anthropic** API key, for AI notes: <https://console.anthropic.com/settings/keys>. You pay per use; notes for an hour-long meeting usually cost well under $0.50.
+- **For AI notes, one of:** an **OpenRouter** key (<https://openrouter.ai/settings/keys>) or an **Anthropic** key (<https://console.anthropic.com/settings/keys>). Either runs Claude; you pay per use, usually well under $0.50 for an hour-long meeting.
+- **Optional:** a **Deepgram** key for faster live transcription (<https://console.deepgram.com>, *API Keys → Create a New API Key*). Without it, transcription runs free on your PC. Deepgram bills per minute of audio *per channel*, and this app sends two (you + them).
 - **Docker Desktop**, for local Supabase (step 4). Optional to start: without it, meetings are saved to a file on your computer.
 
 ## 2. Install
@@ -48,12 +50,13 @@ Copy the example settings file:
 copy .env.example .env
 ```
 
-Open `.env` in any editor and paste in your keys:
+Open `.env` in any editor and paste in your AI notes key:
 
 ```ini
-DEEPGRAM_API_KEY=your-deepgram-key
-ANTHROPIC_API_KEY=your-anthropic-key
+OPENROUTER_API_KEY=your-openrouter-key
 ```
+
+That's all you need. Every other setting in `.env` is optional and explained there.
 
 Start the app:
 
@@ -61,7 +64,7 @@ Start the app:
 npm start
 ```
 
-The bottom-left corner shows what's connected. With just these two keys you can already record and get AI notes; meetings are saved on this computer until you set up Supabase.
+The bottom-left corner shows what's connected. You can record and get AI notes straight away; meetings are saved to `data/meetings.json` in the project until you set up Supabase. The first recording downloads the speech model (about 80 MB) into `data/models`; after that it works offline.
 
 ## 4. Set up Supabase locally
 
@@ -122,17 +125,20 @@ Meetings saved before you connected Supabase stay in the local file and aren't c
 | Command | What it does |
 | --- | --- |
 | `npm start` | Run the app |
-| `npm test` | Unit tests (Deepgram protocol, echo filter, meeting detection, storage, notes prompt, Markdown) |
+| `npm test` | Unit tests (Deepgram reconnects and replay, speech segmenter, echo filter, meeting detection, storage, AI notes, Markdown) |
 | `npm run smoke` | Opens the app hidden, captures 3 s of mic + computer audio, checks it, and exits. Nothing is saved or sent. |
 
 ## Project layout
 
 ```
 src/main/main.js            window, loopback audio handler, recording, IPC
-src/main/deepgram.js        live transcription WebSocket (2 channels → You / Them)
+src/main/deepgram.js        Deepgram live transcription: reconnect, audio replay, stall detection, keyterms
+src/main/localAsr.js        free on-device transcription (starts the worker below)
+src/main/localAsrWorker.js  runs Whisper in its own process so the window never freezes
+src/main/segmenter.js       cuts audio into sentences at pauses; filters Whisper's noise "words"
 src/main/echo.js            drops your mic picking up the call from speakers
 src/main/meetingDetector.js notices Zoom/Teams/etc. using the mic
-src/main/notes.js           Claude AI notes (claude-opus-5-5, streamed)
+src/main/notes.js           AI notes with Claude Opus 5.5, via Anthropic or OpenRouter (streamed)
 src/main/db.js              Supabase store + local-file fallback
 src/main/preload.js         the only functions the window can call
 src/renderer/               the UI (plain HTML/CSS/JS, no build step)
@@ -143,7 +149,9 @@ scripts/sync-supabase-env.js copies local Supabase URL/key into .env
 
 ## Troubleshooting
 
-- **"No Deepgram key" / "No Anthropic key"**: check `.env` is in the project folder (not `.env.txt`) and restart the app.
+- **"AI notes: no key set"**: check `.env` is in the project folder (not `.env.txt`), has `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`, and restart the app.
+- **On-device transcription is slow or inaccurate**: it runs on your CPU. Close heavy apps, or add a Deepgram key. For better accuracy at some speed cost, set `LOCAL_WHISPER_MODEL=onnx-community/whisper-small.en`.
+- **"Your OpenRouter account is out of credits (402)"**: top up at <https://openrouter.ai/settings/credits>.
 - **Deepgram rejected the API key (401)**: copy the key again from the Deepgram console.
 - **"Them" meter never moves**: play something (a YouTube video) to test. Loopback records your *default* playback device; if the call plays through a different device, make it the default in Windows sound settings.
 - **"You" meter never moves**: Windows Settings → Privacy & security → Microphone → allow desktop apps to access your microphone.

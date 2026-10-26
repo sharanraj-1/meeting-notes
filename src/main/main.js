@@ -18,13 +18,34 @@ const ROOT = path.join(__dirname, '..', '..');
 require('dotenv').config({ path: path.join(ROOT, '.env'), quiet: true });
 
 const { DeepgramStream } = require('./deepgram');
+const { LocalTranscriber, modelFor } = require('./localAsr');
 const { EchoFilter } = require('./echo');
 const { MeetingDetector } = require('./meetingDetector');
-const { enhanceNotes, MODEL } = require('./notes');
+const { enhanceNotes, notesProvider } = require('./notes');
 const { openStore } = require('./db');
+
+const LANGUAGE = () => process.env.TRANSCRIPTION_LANGUAGE || process.env.DEEPGRAM_LANGUAGE || 'en';
+
+// Deepgram when there's a key (fastest, most accurate), otherwise free
+// on-device Whisper that needs no account at all.
+function createTranscriber(meeting) {
+  if (process.env.DEEPGRAM_API_KEY) {
+    const extra = (process.env.DEEPGRAM_KEYTERMS || '').split(',');
+    const fromTitle = (meeting?.title || '').split(/[,;|·]/);
+    return new DeepgramStream({
+      apiKey: process.env.DEEPGRAM_API_KEY,
+      language: LANGUAGE(),
+      keyterms: [...extra, ...fromTitle].filter((t) => t && !/^untitled meeting$/i.test(t.trim())),
+    });
+  }
+  return new LocalTranscriber({ cacheDir: path.join(DATA_DIR, 'models'), language: LANGUAGE() });
+}
 
 const SMOKE = process.argv.includes('--smoke');
 const RENDERER_DIR = path.join(ROOT, 'src', 'renderer');
+// Meetings (when Supabase isn't set up) and the speech model live here, inside
+// the project, so they're in the same place however the app is launched.
+const DATA_DIR = process.env.MEETING_NOTES_DATA_DIR || path.join(ROOT, 'data');
 
 // Serve the UI from app://ui/ instead of file:// so the audio worklet module
 // loads like it would from a normal web origin.
@@ -99,9 +120,10 @@ function registerIpc() {
   ipcMain.handle('app:info', () => ({
     storeKind: store.kind,
     storeLabel: store.label,
-    hasDeepgram: Boolean(process.env.DEEPGRAM_API_KEY),
-    hasAnthropic: Boolean(process.env.ANTHROPIC_API_KEY),
-    model: MODEL,
+    transcription: process.env.DEEPGRAM_API_KEY
+      ? { kind: 'deepgram', label: 'Deepgram (live)' }
+      : { kind: 'local', label: `On-device Whisper (${modelFor(LANGUAGE()).split('/').pop()})` },
+    notes: notesProvider(),
     platform: process.platform,
     smoke: SMOKE,
   }));
@@ -119,12 +141,12 @@ function registerIpc() {
 
   ipcMain.handle('rec:start', async (_e, meetingId) => {
     if (recording) throw new Error('Already recording.');
-    const stream = new DeepgramStream({ apiKey: process.env.DEEPGRAM_API_KEY, language: process.env.DEEPGRAM_LANGUAGE || 'en' });
+    const existing = await store.getMeeting(meetingId).catch(() => ({ segments: [] }));
+    const stream = createTranscriber(existing);
     const echo = new EchoFilter();
     recording = { meetingId, stream, echo };
 
     // When resuming a meeting, continue the clock from where the transcript left off.
-    const existing = await store.getMeeting(meetingId).catch(() => ({ segments: [] }));
     const offset = existing.segments.reduce((max, s) => Math.max(max, s.end_sec), 0);
     if (offset > 0) await store.updateMeeting(meetingId, { ended_at: null }).catch(() => {});
 
@@ -139,9 +161,10 @@ function registerIpc() {
         send('rec:error', `Couldn't save part of the transcript: ${err.message}`);
       }
     });
+    stream.on('status', (status) => send('rec:status', { ...status, kind: stream.kind }));
     stream.on('error', (err) => send('rec:error', err.message));
     stream.on('close', ({ expected, code }) => {
-      if (!expected) send('rec:error', `Transcription connection closed unexpectedly (code ${code}).`);
+      if (!expected) send('rec:error', `Transcription stopped unexpectedly (code ${code}). Stop and start recording to continue.`);
     });
 
     try {
@@ -171,7 +194,8 @@ function registerIpc() {
     notesAbort = new AbortController();
     const m = await store.getMeeting(meetingId);
     const markdown = await enhanceNotes({
-      apiKey: process.env.ANTHROPIC_API_KEY,
+      anthropicKey: process.env.ANTHROPIC_API_KEY,
+      openrouterKey: process.env.OPENROUTER_API_KEY,
       title: m.title,
       userNotes: m.user_notes,
       segments: m.segments,
@@ -220,7 +244,7 @@ app.whenReady().then(async () => {
   store = openStore({
     url: process.env.SUPABASE_URL,
     key: process.env.SUPABASE_SECRET_KEY,
-    localFile: path.join(app.getPath('userData'), 'meetings.json'),
+    localFile: path.join(DATA_DIR, 'meetings.json'),
   });
   try {
     await store.check();

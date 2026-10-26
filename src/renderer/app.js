@@ -81,8 +81,12 @@ async function renderStatus() {
   if (storeError) rows.push(el('div', { class: 'warn' }, `Supabase error: ${storeError}`));
   else if (info.storeKind === 'supabase') rows.push(el('div', { class: 'ok' }, `Supabase · ${new URL(info.storeLabel).host}`));
   else rows.push(el('div', { class: 'warn', title: info.storeLabel }, 'Saving on this computer (Supabase not set up)'));
-  rows.push(el('div', { class: info.hasDeepgram ? 'ok' : 'warn' }, info.hasDeepgram ? 'Deepgram connected' : 'No Deepgram key'));
-  rows.push(el('div', { class: info.hasAnthropic ? 'ok' : 'warn' }, info.hasAnthropic ? 'Claude connected' : 'No Anthropic key'));
+  rows.push(el('div', { class: 'ok' }, `Transcription: ${info.transcription.label}`));
+  rows.push(
+    info.notes
+      ? el('div', { class: 'ok' }, `AI notes: ${info.notes.name === 'openrouter' ? 'Claude via OpenRouter' : 'Claude'}`)
+      : el('div', { class: 'warn' }, 'AI notes: no key set'),
+  );
   $('status').replaceChildren(...rows);
 }
 
@@ -181,12 +185,16 @@ function renderTranscript(segments) {
   state.interim.clear();
   if (segments.length === 0) {
     const live = state.rec?.meetingId === state.current?.id;
-    box.replaceChildren(el('div', { class: 'placeholder' }, live ? 'Listening… words will appear here as people talk.' : 'No transcript yet. Start recording and it will appear here live.'));
+    const onDevice = state.info?.transcription?.kind === 'local';
+    const listening = onDevice
+      ? 'Listening… each line appears a moment after someone finishes speaking.'
+      : 'Listening… words will appear here as people talk.';
+    box.replaceChildren(el('div', { class: 'placeholder' }, live ? listening : 'No transcript yet. Start recording and it will appear here live.'));
   } else {
     box.replaceChildren(...segments.map((s) => segmentNode(s)));
     box.scrollTop = box.scrollHeight;
   }
-  $('transcript-hint').textContent = segments.length ? `${segments.length} lines` : '';
+  $('transcript-hint').textContent = lineCount();
 }
 
 function onTranscript(seg) {
@@ -293,10 +301,6 @@ function setLevel(level) {
 async function startRecording() {
   const m = state.current;
   if (!m || state.rec) return;
-  if (!state.info.hasDeepgram) {
-    showBanner('Add DEEPGRAM_API_KEY to the .env file and restart the app to record. See README.md.', { error: true });
-    return;
-  }
   const btn = $('record');
   btn.disabled = true;
   btn.textContent = 'Starting…';
@@ -351,6 +355,33 @@ async function stopRecording() {
   }
 }
 
+function lineCount() {
+  const n = state.current?.segments?.length ?? 0;
+  return n ? `${n} lines` : '';
+}
+
+function onRecordingStatus(s) {
+  const hint = $('transcript-hint');
+  const mb = (b) => Math.round(b / 1e6);
+  switch (s.state) {
+    case 'downloading':
+      // Also fires while loading an already-downloaded model; only show real downloads.
+      if (s.loaded < s.total) hint.textContent = `Downloading speech model: ${mb(s.loaded)} of ${mb(s.total)} MB (first time only)`;
+      break;
+    case 'ready':
+    case 'reconnected':
+      hint.textContent = lineCount();
+      break;
+    case 'transcribing':
+      hint.textContent = `${lineCount() ? `${lineCount()} · ` : ''}transcribing…`;
+      break;
+    case 'reconnecting':
+    case 'stalled':
+      hint.textContent = 'Connection dropped. Reconnecting; your audio is being kept.';
+      break;
+  }
+}
+
 // ---------- AI notes ----------
 
 function showTab(name) {
@@ -363,8 +394,8 @@ async function enhance() {
   const m = state.current;
   if (!m || state.aiBusy) return;
   showTab('ai');
-  if (!state.info.hasAnthropic) {
-    $('ai-status').textContent = 'Add ANTHROPIC_API_KEY to .env and restart to use AI notes.';
+  if (!state.info.notes) {
+    $('ai-status').textContent = 'Add OPENROUTER_API_KEY or ANTHROPIC_API_KEY to .env and restart to use AI notes.';
     return;
   }
   await saveNotes.flush();
@@ -474,6 +505,7 @@ async function init() {
 
   api.onTranscript(onTranscript);
   api.onRecordingError((msg) => showBanner(msg, { error: true }));
+  api.onRecordingStatus(onRecordingStatus);
   api.onNotesDelta(onNotesDelta);
   api.onMeetingDetected(onMeetingDetected);
   api.onStartRequested((appName) => newMeeting({ source_app: appName, autoStart: true }));
